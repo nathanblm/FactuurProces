@@ -11,12 +11,12 @@ import io
 import os
 import tkinter as tk
 import numpy as np
+import datetime
 from typing import Tuple
 from email import message_from_string
 from azure.ai.formrecognizer import DocumentAnalysisClient
 from azure.ai.formrecognizer import DocumentField
 from azure.core.credentials import AzureKeyCredential
-from datetime import datetime, timedelta
 from threading import Thread
 # ---------------------
 # Configuration and Utilities Section
@@ -110,7 +110,6 @@ class LoggingManager:
 # ----------------
 # Test Environment Utilities
 # ----------------
-
 class TestEnvironmentUtilities:
     @staticmethod
     def save_xml_locally_for_test(key_value_pairs, cleaned_content):
@@ -125,7 +124,6 @@ class TestEnvironmentUtilities:
         with open(local_filename, 'w', encoding='utf-8') as local_file:
             local_file.write(cleaned_content)
         logging.getLogger('production').info(f"Populated XML file saved locally to {local_filename} for testing purposes.")
-
 # ----------------
 # GUI Section
 # ----------------
@@ -212,10 +210,32 @@ class EmailScannerService:
         gui_thread = Thread(target=self.start_gui)
         gui_thread.daemon = True
         gui_thread.start()
+
         while True:
-            self.scan_emails()
-            logging.getLogger('production').info("Sleeping for next scan interval...")
-            time.sleep(self.check_interval)
+            current_time = datetime.datetime.now().time()
+            
+            #TEST LINE
+            start_time = datetime.time(1, 0, 0)
+            end_time = datetime.time(23, 0, 0)
+
+            #PRODUCTION LINE
+            #start_time = datetime.time(7, 0, 0)
+            #end_time = datetime.time(19, 0, 0)
+
+            if start_time <= current_time <= end_time:          
+                self.scan_emails()
+                logging.getLogger('production').info("Sleeping for next scan interval...")
+                time.sleep(self.check_interval)
+            else:
+                now = datetime.datetime.now()
+                next_start = datetime.datetime.combine(now.date(), start_time)
+                if now.time() > end_time:
+                    next_start += datetime.timedelta(days=1)
+                
+                sleep_seconds = (next_start - now).total_seconds()
+
+                logging.getLogger('production').info(f"Outside active scanning hours. Sleeping for {sleep_seconds} seconds until next active window.")
+                time.sleep(sleep_seconds)
 
     def normalize_subject(self, subject):
         return re.sub(r'[^a-zA-Z0-9]+', '', subject)
@@ -396,10 +416,10 @@ class AttachmentAnalyzer:
             return document_field
 
     @staticmethod
-    def calculate_payment_dates(invoice_date_datetime: datetime, discount_days: int, non_discount_days: int) -> Tuple[datetime, datetime]:
+    def calculate_payment_dates(invoice_date_datetime: datetime, discount_days: int, non_discount_days: int) -> Tuple[datetime.datetime, datetime.datetime]:
         try:
-            Payment_term_with_discount_date = invoice_date_datetime + timedelta(days=discount_days)
-            Payment_term_without_discount_date = invoice_date_datetime + timedelta(days=non_discount_days)
+            Payment_term_with_discount_date = invoice_date_datetime + datetime.timedelta(days=discount_days)
+            Payment_term_without_discount_date = invoice_date_datetime + datetime.timedelta(days=non_discount_days)
             return Payment_term_with_discount_date, Payment_term_without_discount_date
         except Exception as e:
             logging.getLogger('debug').error(f"Error calculating payment dates: {e}")
