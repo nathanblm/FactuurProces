@@ -274,7 +274,7 @@ class EmailHandlerService:
             content_disposition = part.get('Content-Disposition', '').lower()
             filename = part.get_filename()
             
-            logging.getLogger('debug').info(f"Part {part_counter}: Type={content_type}, Disposition={content_disposition}, Filename={filename}")
+            #logging.getLogger('debug').info(f"Part {part_counter}: Type={content_type}, Disposition={content_disposition}, Filename={filename}")
             if "pdf" in content_type or (filename and filename.lower().endswith(".pdf")):
                 if "attachment" in content_disposition or "inline" in content_disposition or not content_disposition:
                     return part.get_payload(decode=True)
@@ -471,7 +471,6 @@ class TemplateManager:
                         elif isinstance(nested_value, (str, int)):  # Directly use the value if it's string or int
                             replace_value = nested_value
 
-                    print(f"Replacing [{placeholder}] with {replace_value}")
                     temp_segment = temp_segment.replace(f'[{placeholder}]', str(replace_value))
 
                 populated_segments.append(temp_segment)
@@ -566,11 +565,13 @@ class InvoiceWorkflowManager:
 
         key_value_pairs = self.attachment_processor.analyze_attachment(attachment, business_name)
         key_value_pairs = {k: AttachmentAnalyzer.document_field_to_dict(v) for k, v in key_value_pairs.items()}
-        self.check_for_null_invoice(key_value_pairs['Invoice_value'], subject)
-
+        if self.check_for_null_invoice(key_value_pairs['Invoice_value'], subject):
+            return
+    
         if 'Invoice_date' not in key_value_pairs:
             logging.getLogger('debug').error("Invoice_date not found in the attachment.")
             return
+        
         processed_key_value_pairs = self.generate_and_process_key_value_pairs(key_value_pairs)
         ftp_upload_success = self.prepare_and_upload_to_ftp(processed_key_value_pairs, attachment)
         if ftp_upload_success:
@@ -586,20 +587,19 @@ class InvoiceWorkflowManager:
         if invoice_value is None:
             self.email_handler.flag_email(subject)
             logging.getLogger('production').error("Invoice value cannot be extracted from pdf, email will be flagged instead of deleted.")
+            return True
         try:
             normalized_invoice_value = invoice_value.replace(' ', '').replace('.', '').replace(',', '.')
             if float(normalized_invoice_value) == 0:
-                self.email_handler.delete_email_by_subject(subject)
+                #PRODUCTON LINE
+                #self.email_handler.delete_email_by_subject(subject)
                 logging.getLogger('production').info("The invoice is a null invoice and will be deleted")
-            else:
-                pass
-        except ValueError as e:
+                return True
+        except (ValueError, TypeError) as e:
             self.email_handler.flag_email(subject)
-            logging.getLogger('production').error(f"{str(e)}, email will be flagged instead of deleted.")
-        except AttributeError as e:
-            self.email_handler.flag_email(subject)
-            logging.getLogger('production').error(f"Incorrect data type for invoice value: {str(e)}, email will be flagged.")
-
+            logging.getLogger('production').error(f"Error processing invoice value '{invoice_value}': {e}, email will be flagged.")
+            return True  # Indicate that processing should stop because of an error
+        return False
 
     def generate_and_process_key_value_pairs(self, key_value_pairs):
         current_datetime = datetime.now()
