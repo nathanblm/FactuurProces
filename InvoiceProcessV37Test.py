@@ -436,7 +436,7 @@ class TemplateManager:
                     value = ' '.join([str(item.content) if hasattr(item, 'content') else str(item) for item in value])
                 elif value is None:
                     value = ''
-                elif isinstance(value, datetime):
+                elif isinstance(value, datetime.datetime):
                     value = value.strftime('%d-%m-%Y')
                 template_content = template_content.replace(f"[{key}]", str(value))
             return template_content
@@ -585,14 +585,16 @@ class InvoiceWorkflowManager:
 
         key_value_pairs = self.attachment_processor.analyze_attachment(attachment, business_name)
         key_value_pairs = {k: AttachmentAnalyzer.document_field_to_dict(v) for k, v in key_value_pairs.items()}
-        if self.check_for_null_invoice(key_value_pairs['Invoice_value'], subject):
+        
+        should_stop, type = self.check_invoice_type(key_value_pairs['Invoice_value'], subject)
+        if should_stop:
             return
-    
+
         if 'Invoice_date' not in key_value_pairs:
             logging.getLogger('debug').error("Invoice_date not found in the attachment.")
             return
         
-        processed_key_value_pairs = self.generate_and_process_key_value_pairs(key_value_pairs)
+        processed_key_value_pairs = self.generate_and_process_key_value_pairs(key_value_pairs, type)
         ftp_upload_success = self.prepare_and_upload_to_ftp(processed_key_value_pairs, attachment)
         if ftp_upload_success:
             print("succesfully uploaded to FTP")          
@@ -603,26 +605,29 @@ class InvoiceWorkflowManager:
             #PRODUCTION LINE
             #self.email_handler.flag_email(subject)
 
-    def check_for_null_invoice(self, invoice_value, subject):
+    def check_invoice_type(self, invoice_value, subject):
         if invoice_value is None:
             self.email_handler.flag_email(subject)
             logging.getLogger('production').error("Invoice value cannot be extracted from pdf, email will be flagged instead of deleted.")
-            return True
+            return (True, None)
+        if "-" in invoice_value:
+            logging.getLogger('production').error("Negative invoice value detected, processing as credit note.")
+            return (False, "CRME")
         try:
             normalized_invoice_value = invoice_value.replace(' ', '').replace('.', '').replace(',', '.')
             if float(normalized_invoice_value) == 0:
                 #PRODUCTON LINE
                 #self.email_handler.delete_email_by_subject(subject)
                 logging.getLogger('production').info("The invoice is a null invoice and will be deleted")
-                return True
+                return (True, None)
         except (ValueError, TypeError) as e:
             self.email_handler.flag_email(subject)
             logging.getLogger('production').error(f"Error processing invoice value '{invoice_value}': {e}, email will be flagged.")
-            return True  # Indicate that processing should stop because of an error
-        return False
+            return (True, None)  # Indicate that processing should stop because of an error
+        return (False, "INVO")
 
-    def generate_and_process_key_value_pairs(self, key_value_pairs):
-        current_datetime = datetime.now()
+    def generate_and_process_key_value_pairs(self, key_value_pairs, type):
+        current_datetime = datetime.datetime.now()
         additional_data = {
             'Creation_date': current_datetime.strftime('%Y%m%d'),
             'Creation_time': current_datetime.strftime('%H%M%S'),
@@ -635,7 +640,7 @@ class InvoiceWorkflowManager:
         
         for date_format in date_formats:
             try:
-                Invoice_date_datetime = datetime.strptime(invoice_date_str, date_format)
+                Invoice_date_datetime = datetime.datetime.strptime(invoice_date_str, date_format)
                 break
             except ValueError:
                 continue
@@ -654,7 +659,7 @@ class InvoiceWorkflowManager:
 
             for date_format in date_formats:
                 try:
-                    Purchase_order_date_datetime = datetime.strptime(purchase_order_date_str, date_format)
+                    Purchase_order_date_datetime = datetime.datetime.strptime(purchase_order_date_str, date_format)
                     break
                 except ValueError:
                     continue
@@ -729,7 +734,15 @@ class InvoiceWorkflowManager:
             for item in key_value_pairs.get('Material_list', []):
                 if 'value' in item and 'Purchase_order_line' not in item['value']:
                     item['value']['Purchase_order_line'] = {'value': purchase_order_line}
-                    
+        
+        key_value_pairs['Type'] = type
+
+        if type == "CRME":
+            key_value_pairs['Invoice_value'] = key_value_pairs['Invoice_value'].replace('-', '')
+            key_value_pairs['Net_value'] = key_value_pairs['Net_value'].replace('-', '')
+            key_value_pairs['Total_tax'] = key_value_pairs['Total_tax'].replace('-', '')
+            key_value_pairs['Material_list'][0]['value']['Quantity']['value'] = key_value_pairs['Material_list'][0]['value']['Quantity']['value'].replace('-', '')
+
         return key_value_pairs
 
     def prepare_and_upload_to_ftp(self, key_value_pairs, original_pdf):
@@ -741,6 +754,7 @@ class InvoiceWorkflowManager:
             statically_updated_content = TemplateManager.replace_static_placeholders(template_content, key_value_pairs)
             dynamically_updated_content = TemplateManager.replace_dynamic_placeholders(statically_updated_content, key_value_pairs.get('Material_list', []))
             cleaned_content = TemplateManager.clean_template_content(dynamically_updated_content)
+
 
             Creditor_number = key_value_pairs.get('Creditor_number')
             Debtor_international_location_number = key_value_pairs.get('Debtor_international_location_number')
