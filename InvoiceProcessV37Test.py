@@ -173,38 +173,38 @@ class EmailScannerService:
         app.mainloop()
 
     def scan_emails(self):
-        logging.getLogger('production').info("Starting email scan...")
-        try:
-            imap_server = imaplib.IMAP4_SSL(self.workflow.email_handler.config['imap_server'])
-            imap_server.login(self.workflow.email_handler.config['email'], self.workflow.email_handler.config['password'])
-            imap_server.select('INBOX')
+        while True:
+            try:
+                logging.getLogger('production').info("Starting email scan...")
+                with imaplib.IMAP4_SSL(self.workflow.email_handler.config['imap_server']) as imap_server:
+                    imap_server.login(self.workflow.email_handler.config['email'], self.workflow.email_handler.config['password'])
+                    imap_server.select('INBOX')
 
-            _, message_numbers = imap_server.search(None, 'ALL')
-            for number in message_numbers[0].split():
-                msg_number = int(number)
-                _, msg_data = imap_server.fetch(number, '(RFC822)')
-                raw_email = msg_data[0][1].decode('utf-8')
-                email_message = message_from_string(raw_email)
-                sender = email_message['From']
-                original_subject = email_message['Subject'].strip()
-                normalized_subject = self.normalize_subject(original_subject)
-                business_name = EmailHandlerService.get_business_name_from_email(sender)
+                    _, message_numbers = imap_server.search(None, 'ALL')
+                    for number in message_numbers[0].split():
+                        msg_number = int(number)
+                        _, msg_data = imap_server.fetch(number, '(RFC822)')
+                        raw_email = msg_data[0][1].decode('utf-8')
+                        email_message = message_from_string(raw_email)
+                        sender = email_message['From']
+                        original_subject = email_message['Subject'].strip()
+                        normalized_subject = self.normalize_subject(original_subject)
+                        business_name = EmailHandlerService.get_business_name_from_email(sender)
 
-                if business_name in self.business_subject_criteria and re.search(self.business_subject_criteria[business_name], normalized_subject, re.IGNORECASE):
-                    logging.getLogger('production').info(f"Added email from '{business_name}' with normalized subject '{normalized_subject}' to the queue.")
-                    self._add_to_queue(msg_number, email_message)
-                else:
-                    self._denied_emails_count += 1
-                    reason = "Subject does not match criteria or sender not recognized"
-                    logging.getLogger('production').info(f"Denied email #{msg_number} from '{sender}' for reason: {reason}. Total denied: {self._denied_emails_count}")
-                    self.workflow.email_handler.flag_email(original_subject)
-        except Exception as e:
-            logging.getLogger('debug').error(f"Error during mailbox scanning: {e}")
-        finally:
-            imap_server.logout()
+                        if business_name in self.business_subject_criteria and re.search(self.business_subject_criteria[business_name], normalized_subject, re.IGNORECASE):
+                            logging.getLogger('production').info(f"Added email from '{business_name}' with normalized subject '{normalized_subject}' to the queue.")
+                            self._add_to_queue(msg_number, email_message)
+                        else:
+                            self._denied_emails_count += 1
+                            reason = "Subject does not match criteria or sender not recognized"
+                            logging.getLogger('production').info(f"Denied email #{msg_number} from '{sender}' for reason: {reason}. Total denied: {self._denied_emails_count}")
+                            self.workflow.email_handler.flag_email(original_subject)
+                    break
+            except Exception as e:
+                logging.getLogger('debug').error(f"Error during mailbox scanning: {e}")
+                time.sleep(self.check_interval)
 
-
-        self.email_processor.process_next_email()
+            self.email_processor.process_next_email()
 
     def run(self):
         gui_thread = Thread(target=self.start_gui)
